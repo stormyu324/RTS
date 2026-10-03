@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>铁幕前线 · IRON FRONT</title><link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">✦</span><div>铁幕前线<small>IRON FRONT / TACTICAL COMMAND</small></div></div>
+    <div class="mission"><span class="live-dot"></span>灰岩谷行动 <span class="muted">/</span> <span id="clock">00:00</span></div>
+    <div class="resources"><div><small>可用资金</small><strong id="credits">¥ 2,000</strong></div><div><small>电力负载</small><strong id="power">40 / 100</strong></div></div>
+    <button id="pause" class="icon-button" title="空格暂停">Ⅱ <span>暂停</span></button>
+  </header>
+  <main>
+    <section class="battlefield" id="field">
+      <div id="map-layer" aria-hidden="true"><canvas id="ground"></canvas><canvas id="shroud"></canvas></div>
+      <canvas id="battle" aria-label="即时战略战场：左键选择，右键移动或攻击"></canvas>
+      <div class="map-label"><span class="eyebrow">战区 07 — NORTHERN RIDGE</span><strong>灰岩谷 <span>32° N / 118° E</span></strong></div>
+      <div class="objective"><span class="objective-icon">⌖</span><div><small>当前任务</small><strong>摧毁敌方指挥中心</strong><p>建立生产线，集结部队，推进北部战区。</p></div></div>
+      <div id="notice" role="status"></div>
+      <div class="battle-footer"><span><i></i> 通讯链路正常</span><span>左键选择 · 拖动框选 · 右键指令 · 中键拖动视野</span></div>
+      <div class="modal hidden" id="result"><div><span class="eyebrow">OPERATION REPORT</span><h1 id="result-title"></h1><p id="result-text"></p><button id="restart">重新部署 ↗</button></div></div>
+      <div class="pause-label hidden" id="pause-label">行动暂停<small>按空格或点击暂停按钮继续</small></div>
+    </section>
+    <aside class="sidebar">
+      <div class="command-heading"><div><span class="eyebrow">COMMAND CENTER</span><h2>作战指挥</h2></div><span class="status-tag">在线</span></div>
+      <section class="radar-section"><div class="section-title"><span>战术雷达</span><small>点击定位</small></div><canvas id="radar" width="288" height="152" aria-label="战术小地图"></canvas><div class="radar-key"><span><i class="blue"></i>我方</span><span><i class="red"></i>敌方</span><span><i class="gold"></i>矿区</span></div></section>
+      <div class="tabs" role="tablist"><button class="active" id="build-tab" role="tab">基地建设</button><button id="unit-tab" role="tab">部队生产</button></div>
+      <section class="production"><div class="section-title"><span id="catalog-title">基础设施</span><small>点击部署</small></div><div id="catalog"></div></section>
+      <section class="selection"><div class="section-title"><span>当前选择</span><small id="selection-count">0 个单位</small></div><div id="selected"><div class="empty-selection">⌖<p>选择部队或建筑<small>按住 Shift 可追加选择</small></p></div></div><div class="order-buttons"><button id="attack-mode" title="选择部队后点击地面，沿途自动攻击">进攻移动 <kbd>A</kbd></button><button id="stop" title="停止选中部队">停止 <kbd>S</kbd></button></div></section>
+      <section class="queue-section"><div class="section-title"><span>生产队列</span><small id="queue-count">空闲</small></div><div id="queue"></div></section>
+      <div class="sidebar-footer"><span>单人遭遇战</span><button id="new-game">重新开始 ↗</button></div>
+    </aside>
+  </main>
+  <script type="module" src="game.js"></script>
+</body>
+</html>
