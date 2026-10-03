@@ -24,14 +24,25 @@
     </section>
     <aside class="sidebar">
       <div class="command-heading"><div><span class="eyebrow">COMMAND CENTER</span><h2>作战指挥</h2></div><span class="status-tag">在线</span></div>
+      <div class="nation-banner"><strong id="nation-name">联邦同盟 / 美国</strong><small id="nation-trait"></small><button id="ability"><span id="ability-name"></span><small id="ability-status"></small></button></div>
       <section class="radar-section"><div class="section-title"><span>战术雷达</span><small>点击定位</small></div><canvas id="radar" width="288" height="152" aria-label="战术小地图"></canvas><div class="radar-key"><span><i class="blue"></i>我方</span><span><i class="red"></i>敌方</span><span><i class="gold"></i>矿区</span></div></section>
       <div class="tabs" role="tablist"><button class="active" id="build-tab" role="tab">基地建设</button><button id="unit-tab" role="tab">部队生产</button></div>
       <section class="production"><div class="section-title"><span id="catalog-title">基础设施</span><small>点击部署</small></div><div id="catalog"></div></section>
       <section class="selection"><div class="section-title"><span>当前选择</span><small id="selection-count">0 个单位</small></div><div id="selected"><div class="empty-selection">⌖<p>选择部队或建筑<small>按住 Shift 可追加选择</small></p></div></div><div class="order-buttons"><button id="attack-mode" title="选择部队后点击地面，沿途自动攻击">进攻移动 <kbd>A</kbd></button><button id="stop" title="停止选中部队">停止 <kbd>S</kbd></button></div></section>
       <section class="queue-section"><div class="section-title"><span>生产队列</span><small id="queue-count">空闲</small></div><div id="queue"></div></section>
-      <div class="sidebar-footer"><span>单人遭遇战</span><button id="new-game">重新开始 ↗</button></div>
+      <div class="sidebar-footer"><span>单人遭遇战</span><button id="new-game">更换国家 ↗</button></div>
     </aside>
   </main>
+  <div id="lobby" class="lobby" role="dialog" aria-modal="true" aria-labelledby="lobby-title">
+    <div class="lobby-panel"><span class="eyebrow">IRON FRONT / SKIRMISH</span><h1 id="lobby-title">选择你的战线</h1><p class="lobby-lead">三大阵营，六个国家。让战术拥有自己的风格。</p>
+      <div id="faction-cards" class="faction-cards"></div>
+      <div class="lobby-label">选择国家 <small>国家加成与阵营特性同时生效</small></div><div id="country-cards" class="country-cards"></div>
+      <div id="faction-units" class="faction-units"></div>
+      <div class="lobby-settings"><label>敌方国家<select id="enemy-country"></select></label><label>作战难度<select id="difficulty"><option value="easy">轻松 · 发展空间更充足</option><option value="normal" selected>标准 · 均衡遭遇战</option><option value="hard">挑战 · 更密集的敌军</option></select></label><button id="deploy">部署部队 ↗</button></div>
+      <div class="lobby-help">左键选择 · 右键移动与攻击 · 中键拖动视野 · 空格暂停<br>建造战车工厂 → 航空基地 / 科技中心 → 阵营特色单位</div>
+      <button id="resume-game" class="hidden">返回当前战局</button>
+    </div>
+  </div>
   <script type="module" src="game.js"></script>
 </body>
 </html>

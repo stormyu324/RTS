@@ -1,11 +1,12 @@
-import { Game, WORLD, SPECS, distance } from './engine.js';
+import { Game, WORLD, SPECS, distance, FACTIONS, COUNTRIES, DIFFICULTIES, isInfantry } from './engine.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('battle'), ctx = canvas.getContext('2d'), radar = $('radar'), rctx = radar.getContext('2d', { alpha: false });
 const ground = $('ground'), gctx = ground.getContext('2d', { alpha: false });
 const mapLayer = $('map-layer');
 ground.width = WORLD.width; ground.height = WORLD.height;
-let game = new Game(), selected = [], tab = 'build', placement = null, attackMode = false, paused = false;
+let game = new Game(), selected = [], tab = 'build', placement = null, attackMode = false, paused = false, lobbyOpen = true, abilityMode = false;
+let chosenCountry = 'usa', hasDeployed = false;
 let camera = { x: 0, y: 620 }, pointer = { x: 0, y: 0 }, drag = null, pan = null, mouseInside = false, lastTime = performance.now(), uiTime = 0;
 let view = { width: 1000, height: 800 }, noticeTimer, resultShown = false;
 const keys = new Set(), colors = { player: '#78bdd2', enemy: '#c96c5c' };
@@ -16,7 +17,7 @@ const FOG_SCALE = .25;
 fog.width = WORLD.width * FOG_SCALE; fog.height = WORLD.height * FOG_SCALE;
 fog.style.width = `${WORLD.width}px`; fog.style.height = `${WORLD.height}px`;
 const radarTerrain = document.createElement('canvas'); radarTerrain.width = radar.width; radarTerrain.height = radar.height;
-let fogTime = -Infinity, radarTime = -Infinity;
+let fogTime = -Infinity, radarTime = -Infinity, fogSignature = '';
 const sightMasks = new Map();
 const unitSprites = new Map();
 const uiCache = new Map();
@@ -77,53 +78,66 @@ function hit(p) { return game.entities.filter(e => game.visible(e) && distance(e
 function notify(message) { $('notice').textContent = message; $('notice').classList.add('show'); clearTimeout(noticeTimer); noticeTimer = setTimeout(() => $('notice').classList.remove('show'), 3200); }
 function setTab(next) { tab = next; $('build-tab').classList.toggle('active', tab === 'build'); $('unit-tab').classList.toggle('active', tab === 'unit'); $('catalog-title').textContent = tab === 'build' ? '基础设施' : '战斗与支援'; renderCatalog(); }
 function renderCatalog() {
-  const types = tab === 'build' ? ['power', 'barracks', 'refinery', 'factory', 'turret'] : ['rifle', 'tank', 'harvester'];
-  $('catalog').innerHTML = types.map(type => { const s = SPECS[type]; return `<button class="card ${placement === type ? 'active' : ''}" data-type="${type}"><span class="card-icon">${s.icon}</span><span class="card-name">${s.name}</span><span class="card-cost">¥${s.cost}</span><small class="card-desc">${s.desc}</small></button>`; }).join('');
+  const types = tab === 'build' ? ['power', 'barracks', 'refinery', 'factory', 'turret', 'airfield', 'lab'] : game.availableUnits();
+  $('catalog').innerHTML = types.map(type => { const s = game.spec(type); return `<button class="card ${placement === type ? 'active' : ''}" data-type="${type}"><span class="card-icon">${s.icon}</span><span class="card-name">${s.name}</span><span class="card-cost">¥${s.cost}</span><small class="card-desc">${s.desc}</small>${s.faction ? '<span class="exclusive">阵营特色</span>' : ''}</button>`; }).join('');
   for (const button of $('catalog').querySelectorAll('button')) button.addEventListener('click', () => {
-    if (game.result) return;
+    if (game.result || lobbyOpen) return;
     const type = button.dataset.type;
     if (tab === 'build') {
       if (game.credits < SPECS[type].cost) { notify('资金不足，等待矿车运回矿石'); return; }
-      placement = placement === type ? null : type; attackMode = false; renderCatalog(); updateUI();
+      placement = placement === type ? null : type; attackMode = abilityMode = false; renderCatalog(); updateUI();
       if (placement) notify(`部署${SPECS[type].name}：左键选择位置，右键取消`);
     } else { const result = game.train(type); notify(result.ok ? `${SPECS[type].name}已加入生产队列` : result.message); updateUI(); }
   });
   updateUI();
 }
 function updateUI() {
+  const nation = COUNTRIES[game.country], faction = FACTIONS[game.faction], a = faction.ability;
+  setText('nation-name', `${faction.name} / ${nation.name}`); $('nation-name').style.color = faction.color;
+  setText('nation-trait', `${faction.trait} · ${nation.trait}`);
+  setText('ability-name', a.name); $('ability').title = a.desc; $('ability').classList.toggle('active', abilityMode);
+  const cool = Math.max(0, Math.ceil(game.abilityReadyAt - game.time));
+  setText('ability-status', cool ? `${cool}s 冷却` : `¥${a.cost} · ${a.instant ? '点击施放' : '点击选择目标'}`);
+  $('ability').disabled = lobbyOpen || !!game.result || cool > 0 || game.credits < a.cost;
   selected = selected.filter(id => game.entities.some(e => e.id === id));
-  $('credits').textContent = `¥ ${Math.floor(game.credits).toLocaleString()}`;
-  const p = game.power; $('power').textContent = `${p.used} / ${p.supply}`; $('power').style.color = p.used > p.supply ? '#df9d7a' : '#d9e1dd';
-  const seconds = Math.floor(game.time); $('clock').textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+  setText('credits', `¥ ${Math.floor(game.credits).toLocaleString()}`);
+  const p = game.power; setText('power', `${p.used} / ${p.supply}`); $('power').style.color = p.used > p.supply ? '#df9d7a' : '#d9e1dd';
+  const seconds = Math.floor(game.time); setText('clock', `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`);
   $('attack-mode').classList.toggle('active', attackMode);
-  $('selection-count').textContent = `${selected.length} 个单位`;
+  setText('selection-count', `${selected.length} 个单位`);
   const entities = game.entities.filter(e => selected.includes(e.id));
   if (entities.length) {
     const e = entities[0], percent = entities.reduce((v, e) => v + e.hp / e.maxHp, 0) / entities.length * 100;
-    setPanelHTML('selected', `<div class="selected-info"><span class="unit-icon">${SPECS[e.type].icon}</span><div><strong>${entities.length > 1 ? `混合小队 · ${entities.length} 个单位` : SPECS[e.type].name}</strong><small>${entities.length > 1 ? '右键下达编队指令' : `${Math.ceil(e.hp)} / ${e.maxHp} 生命值${e.type === 'harvester' ? ` · 载矿 ${Math.floor(e.cargo)}` : ''}`}</small><div class="health"><span style="width:${percent.toFixed(1)}%"></span></div></div></div>`);
+    setPanelHTML('selected', `<div class="selected-info"><span class="unit-icon">${SPECS[e.type].icon}</span><div><strong>${entities.length > 1 ? `混合小队 · ${entities.length} 个单位` : SPECS[e.type].name}</strong><small>${entities.length > 1 ? '右键下达编队指令' : `${Math.ceil(e.hp)} / ${e.maxHp} 生命值${e.type === 'harvester' ? ` · 载矿 ${Math.floor(e.cargo)}` : e.maxShield ? ` · 护盾 ${Math.ceil(e.shield)}` : ''}`}</small><div class="health"><span style="width:${percent.toFixed(1)}%"></span></div>${entities.length === 1 ? `<small>${e.building && ['barracks', 'factory', 'airfield'].includes(e.type) ? '右键地面设置集结点' : SPECS[e.type].desc || '保护你的基地'}</small>` : ''}</div></div>`);
   } else setPanelHTML('selected', '<div class="empty-selection">⌖<p>选择部队或建筑<small>按住 Shift 可追加选择</small></p></div>');
-  $('queue-count').textContent = game.queue.length ? `${game.queue.length} 项生产中` : '空闲';
+  setText('queue-count', game.queue.length ? `${game.queue.length} 项生产中` : '空闲');
   setPanelHTML('queue', game.queue.length ? game.queue.map(q => `<div class="queue-item">${SPECS[q.type].name} <span style="float:right">${Math.ceil(q.remaining)}s</span><div class="health"><span style="width:${((1 - q.remaining / q.total) * 100).toFixed(1)}%"></span></div></div>`).join('') : '暂无生产任务');
   for (const b of $('catalog').querySelectorAll('button')) {
-    const spec = SPECS[b.dataset.type]; b.disabled = !!game.result || (!!spec.producer && !game.has(spec.producer));
-    if (spec.producer && !game.has(spec.producer)) b.title = `需要${SPECS[spec.producer].name}`;
-    else b.title = `${spec.name} · ${spec.time} 秒`;
+    const spec = game.spec(b.dataset.type), missing = game.requirement(b.dataset.type); b.disabled = lobbyOpen || !!game.result || !!missing;
+    b.title = missing || `${spec.name} · ${spec.time.toFixed(1)} 秒`;
   }
 }
 function setPanelHTML(id, html) {
   if (uiCache.get(id) === html) return;
   $(id).innerHTML = html; uiCache.set(id, html);
 }
+function setText(id, text) {
+  const key = `text:${id}`; if (uiCache.get(key) === text) return;
+  $(id).textContent = text; uiCache.set(key, text);
+}
 
 function updateFog(now) {
   if (now - fogTime < 100) return false;
   fogTime = now;
+  const friendly = game.entities.filter(e => e.team === 'player');
+  const signature = friendly.map(e => `${e.id}:${Math.round(e.x * FOG_SCALE)}:${Math.round(e.y * FOG_SCALE)}:${e.stats.sight}`).join(';');
+  if (signature === fogSignature) return false;
+  fogSignature = signature;
   fctx.globalCompositeOperation = 'source-over'; fctx.clearRect(0, 0, fog.width, fog.height);
   fctx.fillStyle = '#101a20c7'; fctx.fillRect(0, 0, fog.width, fog.height);
   fctx.globalCompositeOperation = 'destination-out';
-  for (const e of game.entities) {
-    if (e.team !== 'player') continue;
-    const radius = (e.building ? 340 : 390) * FOG_SCALE;
+  for (const e of friendly) {
+    const radius = e.stats.sight * FOG_SCALE;
     let mask = sightMasks.get(radius);
     if (!mask) {
       mask = document.createElement('canvas'); mask.width = mask.height = Math.ceil(radius * 2);
@@ -184,19 +198,43 @@ function building(e) {
   } else if (e.type === 'turret') {
     ctx.fillStyle = '#667966'; ctx.fillRect(-17, -17, 34, 34); ctx.strokeStyle = '#b2b69b'; ctx.strokeRect(-17, -17, 34, 34);
     ctx.rotate(e.angle); ctx.fillStyle = '#a0ac92'; ctx.fillRect(-12, -11, 24, 22); ctx.fillStyle = team; ctx.fillRect(-9, -9, 5, 18); ctx.fillStyle = '#c2c7ab'; ctx.fillRect(8, -3, 25, 6); ctx.fillStyle = '#2b3c3b'; ctx.fillRect(29, -4, 5, 8);
+  } else if (e.type === 'airfield') {
+    ctx.fillStyle = '#37484c'; ctx.fillRect(-39, -34, 78, 68); ctx.fillStyle = '#253439'; ctx.fillRect(-17, -33, 34, 66);
+    ctx.strokeStyle = '#c9c69f'; ctx.setLineDash([6, 5]); ctx.beginPath(); ctx.moveTo(0, -30); ctx.lineTo(0, 30); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = team; ctx.fillRect(-39, -34, 13, 68); ctx.fillStyle = '#a8b7a0'; ctx.fillRect(20, -27, 18, 25); ctx.fillStyle = '#436469'; ctx.fillRect(22, -24, 14, 7);
+  } else if (e.type === 'lab') {
+    ctx.fillStyle = '#53615b'; ctx.fillRect(-28, -25, 56, 51); ellipse(ctx, 0, -9, 23, 23, '#abb9a8'); ellipse(ctx, 0, -9, 16, 16, '#354f62'); ellipse(ctx, 0, -9, 9, 9, team);
+    line(ctx, -23, 20, 23, 20, team, 5); line(ctx, 24, -22, 24, -47, '#ccd7bf', 2); ellipse(ctx, 24, -47, 5, 5, team);
   }
 }
 function paintUnit(e, ctx) {
   const team = colors[e.team]; ctx.rotate(e.angle);
-  if (e.type === 'rifle') {
+  if (e.stats.flying) {
+    ctx.fillStyle = '#d0d8bb'; ctx.beginPath(); ctx.moveTo(28, 0); ctx.lineTo(-18, -18); ctx.lineTo(-10, 0); ctx.lineTo(-18, 18); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = team; ctx.fillRect(-5, -6, 27, 12); ctx.fillStyle = '#334b5b'; ctx.fillRect(10, -4, 10, 8);
+    if (e.type === 'gunship') { line(ctx, 0, -26, 0, 26, '#344d46', 3); line(ctx, -24, 0, 28, 0, '#344d46', 3); }
+    else { for (const y of [-17, 17]) { ellipse(ctx, -10, y, 8, 8, '#6d8890'); ellipse(ctx, -10, y, 4, 4, team); } }
+  } else if (isInfantry(e.type)) {
     ellipse(ctx, 1, 3, 7, 7, '#14232170'); ctx.fillStyle = '#394a3e'; ctx.fillRect(-6, -5, 9, 3); ctx.fillRect(-6, 3, 9, 3);
     ctx.fillStyle = team; ctx.fillRect(-3, -5, 9, 10); ellipse(ctx, 3, 0, 4, 4, '#bdc3a2'); ctx.fillStyle = '#252f2c'; ctx.fillRect(5, -2, 12, 3);
+    if (e.type === 'medic') { ctx.fillStyle = '#ecebd9'; ctx.fillRect(-3, -5, 8, 10); ctx.fillStyle = '#9bc7a6'; ctx.fillRect(-1, -4, 3, 8); ctx.fillRect(-3, -1, 8, 3); }
+    if (e.type === 'engineer') { ctx.fillStyle = '#e0bd65'; ctx.fillRect(-2, -5, 7, 10); ctx.fillStyle = '#8e613f'; ctx.fillRect(7, -5, 6, 10); }
+    if (e.type === 'rocket') { ctx.fillStyle = '#9ca685'; ctx.fillRect(1, -3, 21, 6); ctx.fillStyle = '#ddad69'; ctx.fillRect(18, -3, 5, 6); }
+    if (e.type === 'sniper') { ctx.fillStyle = '#466747'; ctx.fillRect(-3, -5, 8, 10); line(ctx, 6, 0, 25, 0, '#afb49d', 2); }
+    if (e.type === 'sentinel') { ctx.strokeStyle = '#b9b1ee'; ctx.lineWidth = 2; ctx.strokeRect(-4, -7, 13, 14); }
   } else {
     ctx.fillStyle = '#23332c'; ctx.fillRect(-20, -17, 40, 9); ctx.fillRect(-20, 8, 40, 9);
     for (let x = -18; x < 20; x += 7) { ctx.fillStyle = '#697467'; ctx.fillRect(x, -15, 3, 5); ctx.fillRect(x, 10, 3, 5); }
     ctx.fillStyle = '#7c9078'; ctx.fillRect(-17, -11, 34, 22); ctx.fillStyle = team; ctx.fillRect(-15, -10, 6, 20);
-    if (e.type === 'tank') {
+    if (e.type !== 'harvester') {
       ctx.fillStyle = '#a6b395'; ctx.fillRect(-7, -9, 19, 18); ctx.fillStyle = '#586a58'; ctx.fillRect(-4, -6, 6, 12); ctx.fillStyle = '#c2c9ad'; ctx.fillRect(6, -3, 28, 6); ctx.fillStyle = '#2b3d32'; ctx.fillRect(30, -4, 5, 8);
+      if (e.type === 'scout') { ctx.fillStyle = '#354d51'; ctx.fillRect(0, -8, 11, 16); ctx.fillStyle = team; ctx.fillRect(15, -4, 10, 8); }
+      if (e.type === 'antiair') { ctx.fillStyle = '#657c78'; ctx.fillRect(8, -9, 15, 5); ctx.fillRect(8, 4, 15, 5); }
+      if (e.type === 'heavy') { ctx.fillStyle = '#c5c6a0'; ctx.fillRect(-13, -12, 24, 24); line(ctx, 5, -5, 35, -5, '#dbd2a8', 3); line(ctx, 5, 5, 35, 5, '#dbd2a8', 3); }
+      if (e.type === 'laser') { ellipse(ctx, 4, 0, 10, 10, '#bce6e0'); ellipse(ctx, 4, 0, 5, 5, '#439aa9'); line(ctx, 6, 0, 29, 0, '#7bd9e4', 4); }
+      if (e.type === 'tesla') { ellipse(ctx, 5, 0, 12, 12, '#899a9b'); ellipse(ctx, 5, 0, 7, 7, '#accde0'); line(ctx, -3, -9, 13, 9, '#dfdcf1', 2); }
+      if (e.type === 'artillery') { line(ctx, -4, 0, 38, 0, '#d5ccb1', 7); ctx.fillStyle = '#363f39'; ctx.fillRect(-17, -13, 9, 26); }
+      if (e.type === 'walker') { ctx.fillStyle = '#bbb4d3'; ctx.fillRect(-11, -19, 15, 10); ctx.fillRect(-11, 9, 15, 10); ellipse(ctx, 6, 0, 12, 12, '#798ca7'); line(ctx, 13, 0, 31, 0, '#b4a8e8', 5); }
     } else {
       ctx.fillStyle = '#384837'; ctx.fillRect(-13, -8, 18, 16); ctx.fillStyle = '#b5a552'; ctx.fillRect(-12, -7, 16 * e.cargo / 300, 14);
       ctx.fillStyle = '#abb99d'; ctx.fillRect(7, -9, 9, 18); ctx.fillStyle = '#416267'; ctx.fillRect(11, -6, 5, 12);
@@ -207,11 +245,12 @@ function unit(e) {
   const cargo = Math.floor(e.cargo / 30), key = `${e.type}:${e.team}:${e.type === 'harvester' ? cargo : 0}`;
   let sprite = unitSprites.get(key);
   if (!sprite) {
-    sprite = document.createElement('canvas'); sprite.width = 128; sprite.height = 88;
-    const c = sprite.getContext('2d'); c.setTransform(2, 0, 0, 2, 48, 44);
-    paintUnit({ ...e, angle: 0, cargo: cargo * 30 }, c); unitSprites.set(key, sprite);
+    const bounds = e.stats.flying ? { x: -30, y: -30, width: 66, height: 60 } : isInfantry(e.type) ? { x: -12, y: -12, width: 40, height: 24 } : { x: -24, y: -22, width: e.type === 'artillery' ? 68 : 64, height: 44 };
+    const image = document.createElement('canvas'); image.width = bounds.width * 2; image.height = bounds.height * 2;
+    const c = image.getContext('2d'); c.setTransform(2, 0, 0, 2, -bounds.x * 2, -bounds.y * 2);
+    paintUnit({ ...e, angle: 0, cargo: cargo * 30 }, c); sprite = { image, ...bounds }; unitSprites.set(key, sprite);
   }
-  ctx.rotate(e.angle); ctx.drawImage(sprite, -24, -22, 64, 44);
+  ctx.rotate(e.angle); ctx.drawImage(sprite.image, sprite.x, sprite.y, sprite.width, sprite.height);
 }
 function drawEntity(e) {
   const selectedEntity = selected.includes(e.id);
@@ -219,7 +258,9 @@ function drawEntity(e) {
     ellipse(ctx, e.x, e.y + 3, e.radius + 12, (e.radius + 12) * .7, '#98d5cb16');
     ctx.strokeStyle = '#aae4d4'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(e.x, e.y + 3, e.radius + 12, (e.radius + 12) * .7, 0, 0, Math.PI * 2); ctx.stroke();
     if (e.order && !e.building) { ctx.setLineDash([4, 6]); line(ctx, e.x, e.y, e.order.x, e.order.y, '#b6ded466'); ctx.setLineDash([]); }
+    if (e.rally) { ctx.setLineDash([5, 7]); line(ctx, e.x, e.y, e.rally.x, e.rally.y, '#d8e8a2'); ctx.setLineDash([]); ellipse(ctx, e.rally.x, e.rally.y, 7, 7, '#d8e8a2'); }
   }
+  if (e.shield > 0) { ctx.strokeStyle = '#b4abdf77'; ctx.beginPath(); ctx.ellipse(e.x, e.y, e.radius + 9, e.radius + 9, 0, 0, Math.PI * 2); ctx.stroke(); }
   ellipse(ctx, e.x + 9, e.y + 11, e.radius + 5, e.radius * .7, '#1d2b2a50');
   ctx.save(); ctx.translate(e.x, e.y); if (e.building) building(e); else unit(e); ctx.restore();
   if (selectedEntity || e.hp < e.maxHp) {
@@ -251,10 +292,10 @@ function draw() {
     ctx.fillStyle = '#d3dfa029'; ctx.fillRect(q.x - r, q.y + r - 2 * r * (1 - q.remaining / q.total), r * 2, 2 * r * (1 - q.remaining / q.total));
     ctx.fillStyle = '#d3dfa0'; ctx.font = '10px system-ui'; ctx.textAlign = 'center'; ctx.fillText(`建造中 ${Math.ceil(q.remaining)}s`, q.x, q.y - r - 10);
   }
-  for (const e of game.entities.filter(e => e.x + e.radius + 100 > camera.x && e.x - e.radius - 100 < camera.x + view.width && e.y + e.radius + 100 > camera.y && e.y - e.radius - 100 < camera.y + view.height && game.visible(e)).sort((a, b) => a.y - b.y)) drawEntity(e);
+  for (const e of game.entities.filter(e => e.x + e.radius + 100 > camera.x && e.x - e.radius - 100 < camera.x + view.width && e.y + e.radius + 100 > camera.y && e.y - e.radius - 100 < camera.y + view.height && game.visible(e)).sort((a, b) => (a.stats.flying ? 1 : 0) - (b.stats.flying ? 1 : 0) || a.y - b.y)) drawEntity(e);
   for (const fx of game.effects) {
     if (fx.kind === 'shot') { ctx.globalAlpha = fx.life / fx.maxLife; line(ctx, fx.x, fx.y, fx.tx, fx.ty, fx.team === 'player' ? '#ffecb7' : '#ffad77', 2); ellipse(ctx, fx.tx, fx.ty, 6, 6, '#ffd38b'); }
-    else { const p = 1 - fx.life / fx.maxLife; ctx.globalAlpha = 1 - p; ellipse(ctx, fx.x, fx.y, fx.radius * (.3 + p), fx.radius * (.3 + p), '#df925b'); ellipse(ctx, fx.x, fx.y, fx.radius * .5 * p, fx.radius * .5 * p, '#fff2ae'); }
+    else { const p = 1 - fx.life / fx.maxLife; ctx.globalAlpha = 1 - p; ellipse(ctx, fx.x, fx.y, fx.radius * (.3 + p), fx.radius * (.3 + p), fx.kind === 'support' ? FACTIONS[game.faction].color + '88' : '#df925b'); ellipse(ctx, fx.x, fx.y, fx.radius * .5 * p, fx.radius * .5 * p, '#fff2ae'); }
     ctx.globalAlpha = 1;
   }
   ctx.restore();
@@ -268,6 +309,7 @@ function draw() {
   }
   if (drag && distance(pointer, drag) > 5) { ctx.fillStyle = '#adddcc18'; ctx.strokeStyle = '#b3dfc8'; ctx.lineWidth = 1; ctx.fillRect(drag.x, drag.y, pointer.x - drag.x, pointer.y - drag.y); ctx.strokeRect(drag.x, drag.y, pointer.x - drag.x, pointer.y - drag.y); }
   if (attackMode) { ctx.strokeStyle = '#e8a579'; ctx.beginPath(); ctx.arc(pointer.x, pointer.y, 13, 0, Math.PI * 2); ctx.stroke(); }
+  if (abilityMode) { ctx.strokeStyle = FACTIONS[game.faction].color; ctx.beginPath(); ctx.arc(pointer.x, pointer.y, FACTIONS[game.faction].ability.radius, 0, Math.PI * 2); ctx.stroke(); }
   if (now - radarTime >= 100) { drawRadar(); radarTime = now; }
 }
 function drawRadar() {
@@ -283,9 +325,12 @@ function drawRadar() {
 
 function issue(p, useAttackMode = false) {
   const units = selected.filter(id => game.entities.some(e => e.id === id && !e.building && e.team === 'player'));
-  if (!units.length) { notify('请先选择可移动的部队'); return; }
+  if (!units.length) {
+    if (game.entities.some(e => selected.includes(e.id) && ['barracks', 'factory', 'airfield'].includes(e.type))) { game.setRally(selected, p.x, p.y); notify('生产集结点已设置'); }
+    else notify('请先选择部队，或选择生产建筑设置集结点'); return;
+  }
   const target = hit(p); const enemy = target?.team === 'enemy' ? target : null;
-  units.forEach((id, i) => { const spacing = 38, cols = Math.ceil(Math.sqrt(units.length)); const x = p.x + (i % cols - (cols - 1) / 2) * spacing, y = p.y + (Math.floor(i / cols) - (Math.ceil(units.length / cols) - 1) / 2) * spacing; game.command([id], enemy ? p.x : x, enemy ? p.y : y, enemy?.id, useAttackMode); });
+  units.forEach((id, i) => { const spacing = 38, cols = Math.ceil(Math.sqrt(units.length)), e = game.entities.find(e => e.id === id), supportTarget = target?.team === 'player' && ['medic', 'engineer'].includes(e.type) ? target : null; const x = p.x + (i % cols - (cols - 1) / 2) * spacing, y = p.y + (Math.floor(i / cols) - (Math.ceil(units.length / cols) - 1) / 2) * spacing; game.command([id], enemy || supportTarget ? p.x : x, enemy || supportTarget ? p.y : y, (enemy || supportTarget)?.id, useAttackMode); });
   game.effects.push({ kind: 'explosion', x: p.x, y: p.y, radius: 12, life: .45, maxLife: .45 });
   attackMode = false; updateUI();
 }
@@ -295,9 +340,10 @@ canvas.addEventListener('pointerdown', e => {
     e.preventDefault(); pan = { ...pointer, cameraX: camera.x, cameraY: camera.y };
     canvas.style.cursor = 'grabbing'; canvas.setPointerCapture(e.pointerId); return;
   }
-  if (game.result || paused) return;
-  if (e.button === 2) { if (placement || attackMode) { placement = null; attackMode = false; renderCatalog(); updateUI(); } else issue(p); return; }
+  if (game.result || paused || lobbyOpen) return;
+  if (e.button === 2) { if (placement || attackMode || abilityMode) { placement = null; attackMode = abilityMode = false; renderCatalog(); updateUI(); } else issue(p); return; }
   if (e.button !== 0) return;
+  if (abilityMode) { const result = game.useAbility(p.x, p.y); if (result.ok) abilityMode = false; else notify(result.message); updateUI(); return; }
   if (placement) { const result = game.build(placement, p.x, p.y); notify(result.ok ? `${SPECS[placement].name}开始建造` : result.message); if (result.ok) { placement = null; renderCatalog(); } updateUI(); return; }
   if (attackMode) { issue(p, true); return; }
   drag = { ...pointer, world: p, append: e.shiftKey }; canvas.setPointerCapture(e.pointerId);
@@ -319,18 +365,19 @@ canvas.addEventListener('pointerup', e => {
 canvas.addEventListener('pointercancel', () => { drag = pan = null; canvas.style.cursor = ''; });
 canvas.addEventListener('dblclick', e => { const entity = hit(worldPoint(screenPoint(e))); if (entity?.team === 'player' && !entity.building) { selected = game.entities.filter(u => u.team === 'player' && u.type === entity.type && u.x > camera.x && u.x < camera.x + view.width && u.y > camera.y && u.y < camera.y + view.height).map(u => u.id); updateUI(); } });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
-canvas.addEventListener('pointerenter', () => { mouseInside = true; }); canvas.addEventListener('pointerleave', () => { mouseInside = false; });
+canvas.addEventListener('pointerenter', e => { pointer = screenPoint(e); mouseInside = true; }); canvas.addEventListener('pointerleave', () => { mouseInside = false; });
 radar.addEventListener('pointerdown', e => { const r = radar.getBoundingClientRect(); camera.x = (e.clientX - r.left) / r.width * WORLD.width - view.width / 2; camera.y = (e.clientY - r.top) / r.height * WORLD.height - view.height / 2; boundCamera(); });
-function togglePause() { if (game.result) return; paused = !paused; $('pause-label').classList.toggle('hidden', !paused); $('pause').innerHTML = paused ? '▶ <span>继续</span>' : 'Ⅱ <span>暂停</span>'; }
-function toggleAttack() { if (!selected.length) { notify('请先选择部队'); return; } attackMode = !attackMode; placement = null; renderCatalog(); updateUI(); if (attackMode) notify('进攻移动：左键选择目标位置'); }
+function togglePause() { if (game.result || lobbyOpen) return; paused = !paused; $('pause-label').classList.toggle('hidden', !paused); $('pause').innerHTML = paused ? '▶ <span>继续</span>' : 'Ⅱ <span>暂停</span>'; }
+function toggleAttack() { if (!selected.length) { notify('请先选择部队'); return; } attackMode = !attackMode; abilityMode = false; placement = null; renderCatalog(); updateUI(); if (attackMode) notify('进攻移动：左键选择目标位置'); }
 window.addEventListener('keydown', e => {
-  if (e.target.closest('input, textarea') || e.repeat) return;
+  if (lobbyOpen) { if (e.key === 'Escape' && hasDeployed) closeLobby(); return; }
+  if (e.target.closest('input, textarea, select') || e.repeat) return;
   const key = e.key.toLowerCase();
   if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) e.preventDefault();
   if (key === ' ') togglePause();
   if (key === 'a' && !e.ctrlKey && !e.metaKey) { toggleAttack(); return; }
   if (key === 's') { game.stop(selected); updateUI(); return; }
-  if (key === 'escape') { placement = null; attackMode = false; selected = []; renderCatalog(); updateUI(); }
+  if (key === 'escape') { placement = null; attackMode = abilityMode = false; selected = []; renderCatalog(); updateUI(); }
   if ((e.ctrlKey || e.metaKey) && key === 'a') { e.preventDefault(); selected = game.entities.filter(u => u.team === 'player' && !u.building && u.type !== 'harvester').map(u => u.id); updateUI(); return; }
   if (key === 'h') { camera = { x: 410 - view.width / 2, y: 1020 - view.height / 2 }; boundCamera(); }
   keys.add(key);
@@ -338,13 +385,29 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase())); window.addEventListener('blur', () => { keys.clear(); mouseInside = false; drag = pan = null; canvas.style.cursor = ''; });
 $('build-tab').onclick = () => setTab('build'); $('unit-tab').onclick = () => setTab('unit'); $('pause').onclick = togglePause;
 $('attack-mode').onclick = toggleAttack; $('stop').onclick = () => { game.stop(selected); notify('部队已停止'); updateUI(); };
-function restart() { game = new Game(); selected = []; placement = null; attackMode = false; paused = false; resultShown = false; fogTime = radarTime = -Infinity; camera = { x: 0, y: 620 }; boundCamera(); $('result').classList.add('hidden'); $('pause-label').classList.add('hidden'); $('pause').innerHTML = 'Ⅱ <span>暂停</span>'; renderCatalog(); updateUI(); notify('基地已部署。建造战车工厂，准备迎击敌军。'); }
-$('restart').onclick = restart; $('new-game').onclick = restart;
+function restart(options = { country: game.country, enemyCountry: game.enemyCountry, difficulty: game.difficulty }) {
+  game = new Game(options); colors.player = FACTIONS[game.faction].color; unitSprites.clear(); selected = []; placement = null; attackMode = abilityMode = false; drag = pan = null; keys.clear(); paused = false; resultShown = false; fogSignature = ''; fogTime = radarTime = -Infinity; camera = { x: 0, y: 620 }; boundCamera(); $('result').classList.add('hidden'); $('pause-label').classList.add('hidden'); $('pause').innerHTML = 'Ⅱ <span>暂停</span>'; setTab('build'); $('catalog').scrollTop = 0; document.querySelector('.sidebar').scrollTop = 0; document.querySelector('.objective p').textContent = `对手：${FACTIONS[COUNTRIES[game.enemyCountry].faction].name} · ${COUNTRIES[game.enemyCountry].name} / ${DIFFICULTIES[game.difficulty].name}难度`; updateUI(); notify(`${COUNTRIES[game.country].name}部队已部署。发展经济，建造科技中心解锁特色兵种。`);
+}
+function renderLobby() {
+  const faction = COUNTRIES[chosenCountry].faction;
+  $('faction-cards').innerHTML = Object.entries(FACTIONS).map(([id, f]) => `<button data-faction="${id}" class="faction-card ${id === faction ? 'chosen' : ''}" style="--faction:${f.color}"><span class="faction-emblem">${id === 'alliance' ? '✦' : id === 'iron' ? '▣' : '◈'}</span><strong>${f.name}</strong><p>${f.motto}</p><small>${f.trait}</small></button>`).join('');
+  $('country-cards').innerHTML = FACTIONS[faction].countries.map(id => `<button data-country="${id}" class="country-card ${chosenCountry === id ? 'chosen' : ''}"><span>${COUNTRIES[id].code}</span><strong>${COUNTRIES[id].name}</strong><small>${COUNTRIES[id].trait}</small></button>`).join('');
+  $('faction-units').innerHTML = `<span>特色兵种</span>${FACTIONS[faction].units.map(t => `<div><b>${SPECS[t].icon} ${SPECS[t].name}</b><small>${SPECS[t].desc}</small></div>`).join('')}<div class="lobby-ability"><b>${FACTIONS[faction].ability.name}</b><small>${FACTIONS[faction].ability.desc}</small></div>`;
+  for (const b of $('faction-cards').querySelectorAll('button')) b.onclick = () => { chosenCountry = FACTIONS[b.dataset.faction].countries[0]; renderLobby(); };
+  for (const b of $('country-cards').querySelectorAll('button')) b.onclick = () => { chosenCountry = b.dataset.country; renderLobby(); };
+}
+function openLobby() { lobbyOpen = true; chosenCountry = game.country; $('enemy-country').value = game.enemyCountry; $('difficulty').value = game.difficulty; keys.clear(); document.querySelector('main').inert = true; document.querySelector('header').inert = true; $('lobby').classList.remove('hidden'); $('resume-game').classList.toggle('hidden', !hasDeployed); renderLobby(); updateUI(); $('deploy').focus(); }
+function closeLobby() { lobbyOpen = false; $('lobby').classList.add('hidden'); document.querySelector('main').inert = false; document.querySelector('header').inert = false; updateUI(); }
+$('enemy-country').innerHTML = Object.entries(FACTIONS).map(([id, f]) => `<optgroup label="${f.name}">${f.countries.map(c => `<option value="${c}">${COUNTRIES[c].name}</option>`).join('')}</optgroup>`).join('');
+$('deploy').onclick = () => { hasDeployed = true; closeLobby(); restart({ country: chosenCountry, enemyCountry: $('enemy-country').value, difficulty: $('difficulty').value }); };
+$('resume-game').onclick = closeLobby;
+$('restart').onclick = () => restart(); $('new-game').onclick = openLobby;
+$('ability').onclick = () => { if (paused) { notify('请先恢复行动'); return; } const a = FACTIONS[game.faction].ability; if (a.instant) { const r = game.useAbility(); if (!r.ok) notify(r.message); } else { abilityMode = !abilityMode; placement = null; attackMode = false; renderCatalog(); notify(a.desc); } updateUI(); };
 function frame(now) {
   const dt = Math.min((now - lastTime) / 1000, .1); lastTime = now;
-  if (!paused && !game.result) game.update(dt);
+  if (!paused && !game.result && !lobbyOpen) game.update(dt);
   const speed = 520 * dt;
-  if (!pan) {
+  if (!pan && !lobbyOpen) {
     if (keys.has('arrowleft') || keys.has('j') || (mouseInside && pointer.x < 12)) camera.x -= speed;
     if (keys.has('arrowright') || keys.has('d') || keys.has('l') || (mouseInside && pointer.x > view.width - 12)) camera.x += speed;
     if (keys.has('arrowup') || keys.has('w') || keys.has('i') || (mouseInside && pointer.y < 12)) camera.y -= speed;
@@ -358,4 +421,4 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 generateTerrain(); resize(); new ResizeObserver(resize).observe($('field')); renderCatalog(); updateUI(); requestAnimationFrame(frame);
-notify('欢迎，指挥官。左键选择，右键移动；先建造战车工厂。');
+openLobby();
