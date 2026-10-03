@@ -7,6 +7,10 @@ const mapLayer = $('map-layer');
 ground.width = WORLD.width; ground.height = WORLD.height;
 let game = new Game(), selected = [], tab = 'build', placement = null, attackMode = false, paused = false, lobbyOpen = true, abilityMode = false;
 let chosenCountry = 'usa', hasDeployed = false;
+let touchLayout = false;
+const touchPointers = new Map();
+let touchGesture = null, holdTimer = null, lastTouchTap = null;
+const touchQuery = matchMedia('(pointer: coarse), (max-width: 700px)');
 let camera = { x: 0, y: 620 }, pointer = { x: 0, y: 0 }, drag = null, pan = null, mouseInside = false, lastTime = performance.now(), uiTime = 0;
 let view = { width: 1000, height: 800 }, noticeTimer, resultShown = false;
 const keys = new Set(), colors = { player: '#78bdd2', enemy: '#c96c5c' };
@@ -67,14 +71,19 @@ function generateTerrain() {
 }
 
 function resize() {
-  const box = canvas.getBoundingClientRect(); view.width = box.width; view.height = box.height;
+  const box = canvas.getBoundingClientRect();
+  if (box.width !== view.width || box.height !== view.height) {
+    resetTouch();
+    if (touchLayout) { camera.x += (view.width - box.width) / 2; camera.y += (view.height - box.height) / 2; }
+  }
+  view.width = box.width; view.height = box.height;
   const dpr = Math.min(devicePixelRatio, 2); canvas.width = box.width * dpr; canvas.height = box.height * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0); radarTime = -Infinity; boundCamera();
 }
 function boundCamera() { camera.x = clamp(camera.x, 0, Math.max(0, WORLD.width - view.width)); camera.y = clamp(camera.y, 0, Math.max(0, WORLD.height - view.height)); }
 function screenPoint(event) { const r = canvas.getBoundingClientRect(); return { x: event.clientX - r.left, y: event.clientY - r.top }; }
 function worldPoint(p) { return { x: p.x + camera.x, y: p.y + camera.y }; }
-function hit(p) { return game.entities.filter(e => game.visible(e) && distance(e, p) < e.radius + 12).sort((a, b) => distance(a, p) - distance(b, p))[0]; }
+function hit(p, padding = 12) { return game.entities.filter(e => game.visible(e) && distance(e, p) < e.radius + padding).sort((a, b) => distance(a, p) - distance(b, p))[0]; }
 function notify(message) { $('notice').textContent = message; $('notice').classList.add('show'); clearTimeout(noticeTimer); noticeTimer = setTimeout(() => $('notice').classList.remove('show'), 3200); }
 function setTab(next) { tab = next; $('build-tab').classList.toggle('active', tab === 'build'); $('unit-tab').classList.toggle('active', tab === 'unit'); $('catalog-title').textContent = tab === 'build' ? '基础设施' : '战斗与支援'; renderCatalog(); }
 function renderCatalog() {
@@ -86,7 +95,7 @@ function renderCatalog() {
     if (tab === 'build') {
       if (game.credits < SPECS[type].cost) { notify('资金不足，等待矿车运回矿石'); return; }
       placement = placement === type ? null : type; attackMode = abilityMode = false; renderCatalog(); updateUI();
-      if (placement) notify(`部署${SPECS[type].name}：左键选择位置，右键取消`);
+      if (placement) { closeCommand(); notify(`部署${SPECS[type].name}：${touchLayout ? '点战场选择位置，点取消退出' : '左键选择位置，右键取消'}`); }
     } else { const result = game.train(type); notify(result.ok ? `${SPECS[type].name}已加入生产队列` : result.message); updateUI(); }
   });
   updateUI();
@@ -108,14 +117,20 @@ function updateUI() {
   const entities = game.entities.filter(e => selected.includes(e.id));
   if (entities.length) {
     const e = entities[0], percent = entities.reduce((v, e) => v + e.hp / e.maxHp, 0) / entities.length * 100;
-    setPanelHTML('selected', `<div class="selected-info"><span class="unit-icon">${SPECS[e.type].icon}</span><div><strong>${entities.length > 1 ? `混合小队 · ${entities.length} 个单位` : SPECS[e.type].name}</strong><small>${entities.length > 1 ? '右键下达编队指令' : `${Math.ceil(e.hp)} / ${e.maxHp} 生命值${e.type === 'harvester' ? ` · 载矿 ${Math.floor(e.cargo)}` : e.maxShield ? ` · 护盾 ${Math.ceil(e.shield)}` : ''}`}</small><div class="health"><span style="width:${percent.toFixed(1)}%"></span></div>${entities.length === 1 ? `<small>${e.building && ['barracks', 'factory', 'airfield'].includes(e.type) ? '右键地面设置集结点' : SPECS[e.type].desc || '保护你的基地'}</small>` : ''}</div></div>`);
-  } else setPanelHTML('selected', '<div class="empty-selection">⌖<p>选择部队或建筑<small>按住 Shift 可追加选择</small></p></div>');
+    setPanelHTML('selected', `<div class="selected-info"><span class="unit-icon">${SPECS[e.type].icon}</span><div><strong>${entities.length > 1 ? `混合小队 · ${entities.length} 个单位` : SPECS[e.type].name}</strong><small>${entities.length > 1 ? `${touchLayout ? '点地面' : '右键'}下达编队指令` : `${Math.ceil(e.hp)} / ${e.maxHp} 生命值${e.type === 'harvester' ? ` · 载矿 ${Math.floor(e.cargo)}` : e.maxShield ? ` · 护盾 ${Math.ceil(e.shield)}` : ''}`}</small><div class="health"><span style="width:${percent.toFixed(1)}%"></span></div>${entities.length === 1 ? `<small>${e.building && ['barracks', 'factory', 'airfield'].includes(e.type) ? `${touchLayout ? '点' : '右键'}地面设置集结点` : SPECS[e.type].desc || '保护你的基地'}</small>` : ''}</div></div>`);
+  } else setPanelHTML('selected', `<div class="empty-selection">⌖<p>选择部队或建筑<small>${touchLayout ? '单指拖动可框选部队' : '按住 Shift 可追加选择'}</small></p></div>`);
   setText('queue-count', game.queue.length ? `${game.queue.length} 项生产中` : '空闲');
   setPanelHTML('queue', game.queue.length ? game.queue.map(q => `<div class="queue-item">${SPECS[q.type].name} <span style="float:right">${Math.ceil(q.remaining)}s</span><div class="health"><span style="width:${((1 - q.remaining / q.total) * 100).toFixed(1)}%"></span></div></div>`).join('') : '暂无生产任务');
   for (const b of $('catalog').querySelectorAll('button')) {
     const spec = game.spec(b.dataset.type), missing = game.requirement(b.dataset.type); b.disabled = lobbyOpen || !!game.result || !!missing;
     b.title = missing || `${spec.name} · ${spec.time.toFixed(1)} 秒`;
   }
+  const aiming = placement || attackMode || abilityMode;
+  setText('mobile-selection', placement ? `部署${SPECS[placement].name}：点战场选位置` : abilityMode ? `${a.name}：点战场选择目标` : attackMode ? '进攻移动：点战场选择目标' : entities.length ? `${entities.length === 1 ? SPECS[entities[0].type].name : `${entities.length} 个单位`} · 点地面下令` : '点选部队开始行动');
+  setText('mobile-cancel', aiming ? '取消' : '清除');
+  $('mobile-cancel').disabled = !aiming && !selected.length;
+  $('mobile-attack').classList.toggle('active', attackMode);
+  $('mobile-attack').disabled = $('mobile-stop').disabled = !selected.length || paused || !!game.result;
 }
 function setPanelHTML(id, html) {
   if (uiCache.get(id) === html) return;
@@ -334,7 +349,103 @@ function issue(p, useAttackMode = false) {
   game.effects.push({ kind: 'explosion', x: p.x, y: p.y, radius: 12, life: .45, maxLife: .45 });
   attackMode = false; updateUI();
 }
+function clearHold() { clearTimeout(holdTimer); holdTimer = null; }
+function resetTouch() {
+  clearHold();
+  const ids = [...touchPointers.keys()];
+  touchPointers.clear(); touchGesture = null; lastTouchTap = null; drag = null;
+  for (const id of ids) if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
+}
+function closeCommand() {
+  document.body.classList.remove('command-open');
+  $('mobile-command').setAttribute('aria-expanded', 'false');
+  $('command-panel').inert = touchLayout;
+  if (touchLayout && $('command-panel').contains(document.activeElement)) $('mobile-command').focus({ preventScroll: true });
+}
+function setTouchLayout(enabled) {
+  if (enabled === touchLayout) return;
+  resetTouch(); touchLayout = enabled; mouseInside = false;
+  document.body.classList.toggle('touch-layout', enabled); closeCommand(); resize();
+  document.querySelector('.lobby-help').innerHTML = `${enabled ? '点选部队 · 点地面移动 · 长按攻击 · 双指拖动视野' : '左键选择 · 右键移动与攻击 · 中键拖动视野 · 空格暂停'}<br>建造战车工厂 → 航空基地 / 科技中心 → 阵营特色单位`;
+  document.querySelector('.pause-label small').textContent = enabled ? '点击顶部继续按钮恢复行动' : '按空格或点击暂停按钮继续';
+  canvas.setAttribute('aria-label', enabled ? '即时战略战场：点选部队，点地面移动，长按攻击，单指框选，双指拖动视野' : '即时战略战场：左键选择，右键移动或攻击');
+  updateUI();
+}
+function focusBase() { camera = { x: 410 - view.width / 2, y: 1020 - view.height / 2 }; boundCamera(); }
+function selectArmy() {
+  selected = game.entities.filter(u => u.team === 'player' && !u.building && u.type !== 'harvester').map(u => u.id); updateUI();
+}
+function selectSameType(entity) {
+  selected = game.entities.filter(u => u.team === 'player' && u.type === entity.type && !u.building && u.x > camera.x && u.x < camera.x + view.width && u.y > camera.y && u.y < camera.y + view.height).map(u => u.id);
+  updateUI();
+}
+function targetAction(p) {
+  if (abilityMode) { const result = game.useAbility(p.x, p.y); if (result.ok) abilityMode = false; else notify(result.message); updateUI(); return true; }
+  if (placement) { const result = game.build(placement, p.x, p.y); notify(result.ok ? `${SPECS[placement].name}开始建造` : result.message); if (result.ok) { placement = null; renderCatalog(); } updateUI(); return true; }
+  if (attackMode) { issue(p, true); return true; }
+  return false;
+}
+function touchAction(point, held = false) {
+  if (paused || lobbyOpen || game.result) return;
+  if (targetAction(point)) { lastTouchTap = null; return; }
+  const entity = hit(point, 22), now = performance.now();
+  if (entity?.team === 'player') {
+    const canSupport = selected.some(id => game.entities.some(u => u.id === id && ['medic', 'engineer'].includes(u.type)));
+    if (held && canSupport) issue(entity);
+    else if (!entity.building && (held || (lastTouchTap?.id === entity.id && now - lastTouchTap.time < 350))) selectSameType(entity);
+    else selected = [entity.id];
+    lastTouchTap = held ? null : { id: entity.id, time: now };
+  } else if (selected.length) { issue(entity || point, held && !entity); lastTouchTap = null; }
+  else { lastTouchTap = null; if (entity?.team === 'enemy') notify('先点选部队，再点敌军发起攻击'); }
+  updateUI();
+}
+function touchCenter() {
+  const points = [...touchPointers.values()];
+  return { x: points.reduce((s, p) => s + p.x, 0) / points.length, y: points.reduce((s, p) => s + p.y, 0) / points.length };
+}
+function touchDown(e) {
+  e.preventDefault();
+  if (lobbyOpen || game.result || paused) return;
+  if (!touchLayout) setTouchLayout(true);
+  mouseInside = false; pointer = screenPoint(e); touchPointers.set(e.pointerId, pointer); canvas.setPointerCapture(e.pointerId);
+  if (touchPointers.size === 1) {
+    touchGesture = { kind: 'tap', start: { ...pointer }, world: worldPoint(pointer) };
+    holdTimer = setTimeout(() => {
+      if (touchGesture?.kind !== 'tap') return;
+      touchGesture.kind = 'held'; touchAction(touchGesture.world, true);
+    }, 500);
+  } else {
+    clearHold(); drag = null; lastTouchTap = null;
+    touchGesture = { kind: 'pan', start: touchCenter(), cameraX: camera.x, cameraY: camera.y };
+  }
+}
+function touchMove(e) {
+  if (!touchPointers.has(e.pointerId)) return;
+  e.preventDefault(); pointer = screenPoint(e); touchPointers.set(e.pointerId, pointer);
+  const gesture = touchGesture;
+  if (gesture?.kind === 'pan' && touchPointers.size >= 2) {
+    const center = touchCenter(); camera.x = gesture.cameraX - (center.x - gesture.start.x); camera.y = gesture.cameraY - (center.y - gesture.start.y); boundCamera();
+  } else if (gesture?.kind === 'tap' && distance(pointer, gesture.start) > 10) {
+    clearHold(); lastTouchTap = null;
+    if (placement || attackMode || abilityMode) gesture.kind = 'cancelled';
+    else { gesture.kind = 'box'; drag = { ...gesture.start, world: gesture.world, append: false }; }
+  }
+}
+function touchUp(e) {
+  if (!touchPointers.has(e.pointerId)) return;
+  e.preventDefault(); clearHold(); pointer = screenPoint(e);
+  const gesture = touchGesture;
+  touchPointers.delete(e.pointerId);
+  if (gesture?.kind === 'tap') touchAction(worldPoint(pointer));
+  else if (gesture?.kind === 'box') {
+    const p = worldPoint(pointer), x1 = Math.min(gesture.world.x, p.x), x2 = Math.max(gesture.world.x, p.x), y1 = Math.min(gesture.world.y, p.y), y2 = Math.max(gesture.world.y, p.y);
+    selected = game.entities.filter(u => u.team === 'player' && !u.building && u.x >= x1 && u.x <= x2 && u.y >= y1 && u.y <= y2).map(u => u.id); updateUI();
+  }
+  // Lifting either finger ends a pan. The remaining finger cannot issue a command.
+  touchGesture = touchPointers.size ? { kind: 'cancelled' } : null; drag = null;
+}
 canvas.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'touch') { touchDown(e); return; }
   pointer = screenPoint(e); const p = worldPoint(pointer);
   if (e.button === 1) {
     e.preventDefault(); pan = { ...pointer, cameraX: camera.x, cameraY: camera.y };
@@ -343,16 +454,16 @@ canvas.addEventListener('pointerdown', e => {
   if (game.result || paused || lobbyOpen) return;
   if (e.button === 2) { if (placement || attackMode || abilityMode) { placement = null; attackMode = abilityMode = false; renderCatalog(); updateUI(); } else issue(p); return; }
   if (e.button !== 0) return;
-  if (abilityMode) { const result = game.useAbility(p.x, p.y); if (result.ok) abilityMode = false; else notify(result.message); updateUI(); return; }
-  if (placement) { const result = game.build(placement, p.x, p.y); notify(result.ok ? `${SPECS[placement].name}开始建造` : result.message); if (result.ok) { placement = null; renderCatalog(); } updateUI(); return; }
-  if (attackMode) { issue(p, true); return; }
+  if (targetAction(p)) return;
   drag = { ...pointer, world: p, append: e.shiftKey }; canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener('pointermove', e => {
+  if (e.pointerType === 'touch') { touchMove(e); return; }
   pointer = screenPoint(e);
   if (pan) { camera.x = pan.cameraX - (pointer.x - pan.x); camera.y = pan.cameraY - (pointer.y - pan.y); boundCamera(); }
 });
 canvas.addEventListener('pointerup', e => {
+  if (e.pointerType === 'touch') { touchUp(e); return; }
   if (e.button === 1) { pan = null; canvas.style.cursor = ''; return; }
   if (!drag || e.button !== 0) return;
   pointer = screenPoint(e); const p = worldPoint(pointer); let ids = [];
@@ -362,13 +473,14 @@ canvas.addEventListener('pointerup', e => {
   } else { const e = hit(p); if (e?.team === 'player') ids = [e.id]; }
   selected = drag.append ? [...new Set([...selected, ...ids])] : ids; drag = null; updateUI();
 });
-canvas.addEventListener('pointercancel', () => { drag = pan = null; canvas.style.cursor = ''; });
-canvas.addEventListener('dblclick', e => { const entity = hit(worldPoint(screenPoint(e))); if (entity?.team === 'player' && !entity.building) { selected = game.entities.filter(u => u.team === 'player' && u.type === entity.type && u.x > camera.x && u.x < camera.x + view.width && u.y > camera.y && u.y < camera.y + view.height).map(u => u.id); updateUI(); } });
+canvas.addEventListener('pointercancel', () => { resetTouch(); drag = pan = null; canvas.style.cursor = ''; });
+canvas.addEventListener('lostpointercapture', e => { if (touchPointers.has(e.pointerId)) resetTouch(); });
+canvas.addEventListener('dblclick', e => { if (e.sourceCapabilities?.firesTouchEvents) return; const entity = hit(worldPoint(screenPoint(e))); if (entity?.team === 'player' && !entity.building) selectSameType(entity); });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
-canvas.addEventListener('pointerenter', e => { pointer = screenPoint(e); mouseInside = true; }); canvas.addEventListener('pointerleave', () => { mouseInside = false; });
-radar.addEventListener('pointerdown', e => { const r = radar.getBoundingClientRect(); camera.x = (e.clientX - r.left) / r.width * WORLD.width - view.width / 2; camera.y = (e.clientY - r.top) / r.height * WORLD.height - view.height / 2; boundCamera(); });
-function togglePause() { if (game.result || lobbyOpen) return; paused = !paused; $('pause-label').classList.toggle('hidden', !paused); $('pause').innerHTML = paused ? '▶ <span>继续</span>' : 'Ⅱ <span>暂停</span>'; }
-function toggleAttack() { if (!selected.length) { notify('请先选择部队'); return; } attackMode = !attackMode; abilityMode = false; placement = null; renderCatalog(); updateUI(); if (attackMode) notify('进攻移动：左键选择目标位置'); }
+canvas.addEventListener('pointerenter', e => { if (e.pointerType === 'touch') return; pointer = screenPoint(e); mouseInside = true; }); canvas.addEventListener('pointerleave', () => { mouseInside = false; });
+radar.addEventListener('pointerdown', e => { e.preventDefault(); const r = radar.getBoundingClientRect(); camera.x = (e.clientX - r.left) / r.width * WORLD.width - view.width / 2; camera.y = (e.clientY - r.top) / r.height * WORLD.height - view.height / 2; boundCamera(); closeCommand(); });
+function togglePause() { if (game.result || lobbyOpen) return; resetTouch(); paused = !paused; $('pause-label').classList.toggle('hidden', !paused); $('pause').innerHTML = paused ? '▶ <span>继续</span>' : 'Ⅱ <span>暂停</span>'; updateUI(); }
+function toggleAttack() { if (paused || game.result || lobbyOpen) return; if (!selected.length) { notify('请先选择部队'); return; } attackMode = !attackMode; abilityMode = false; placement = null; renderCatalog(); updateUI(); if (attackMode) { closeCommand(); notify(`进攻移动：${touchLayout ? '点战场' : '左键'}选择目标位置`); } }
 window.addEventListener('keydown', e => {
   if (lobbyOpen) { if (e.key === 'Escape' && hasDeployed) closeLobby(); return; }
   if (e.target.closest('input, textarea, select') || e.repeat) return;
@@ -378,15 +490,23 @@ window.addEventListener('keydown', e => {
   if (key === 'a' && !e.ctrlKey && !e.metaKey) { toggleAttack(); return; }
   if (key === 's') { game.stop(selected); updateUI(); return; }
   if (key === 'escape') { placement = null; attackMode = abilityMode = false; selected = []; renderCatalog(); updateUI(); }
-  if ((e.ctrlKey || e.metaKey) && key === 'a') { e.preventDefault(); selected = game.entities.filter(u => u.team === 'player' && !u.building && u.type !== 'harvester').map(u => u.id); updateUI(); return; }
-  if (key === 'h') { camera = { x: 410 - view.width / 2, y: 1020 - view.height / 2 }; boundCamera(); }
+  if ((e.ctrlKey || e.metaKey) && key === 'a') { e.preventDefault(); selectArmy(); return; }
+  if (key === 'h') focusBase();
   keys.add(key);
 });
-window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase())); window.addEventListener('blur', () => { keys.clear(); mouseInside = false; drag = pan = null; canvas.style.cursor = ''; });
+window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase())); window.addEventListener('blur', () => { keys.clear(); mouseInside = false; resetTouch(); drag = pan = null; canvas.style.cursor = ''; });
 $('build-tab').onclick = () => setTab('build'); $('unit-tab').onclick = () => setTab('unit'); $('pause').onclick = togglePause;
 $('attack-mode').onclick = toggleAttack; $('stop').onclick = () => { game.stop(selected); notify('部队已停止'); updateUI(); };
+$('mobile-select').onclick = selectArmy; $('mobile-attack').onclick = toggleAttack; $('mobile-stop').onclick = $('stop').onclick; $('mobile-home').onclick = focusBase;
+$('mobile-cancel').onclick = () => { const aiming = placement || attackMode || abilityMode; placement = null; attackMode = abilityMode = false; if (!aiming) selected = []; resetTouch(); renderCatalog(); updateUI(); };
+$('mobile-command').onclick = () => {
+  if (document.body.classList.contains('command-open')) { closeCommand(); return; }
+  resetTouch(); document.body.classList.add('command-open'); $('command-panel').inert = false; $('mobile-command').setAttribute('aria-expanded', 'true'); $('close-command').focus({ preventScroll: true });
+};
+$('close-command').onclick = $('command-shade').onclick = closeCommand;
+touchQuery.addEventListener('change', () => setTouchLayout(touchQuery.matches));
 function restart(options = { country: game.country, enemyCountry: game.enemyCountry, difficulty: game.difficulty }) {
-  game = new Game(options); colors.player = FACTIONS[game.faction].color; unitSprites.clear(); selected = []; placement = null; attackMode = abilityMode = false; drag = pan = null; keys.clear(); paused = false; resultShown = false; fogSignature = ''; fogTime = radarTime = -Infinity; camera = { x: 0, y: 620 }; boundCamera(); $('result').classList.add('hidden'); $('pause-label').classList.add('hidden'); $('pause').innerHTML = 'Ⅱ <span>暂停</span>'; setTab('build'); $('catalog').scrollTop = 0; document.querySelector('.sidebar').scrollTop = 0; document.querySelector('.objective p').textContent = `对手：${FACTIONS[COUNTRIES[game.enemyCountry].faction].name} · ${COUNTRIES[game.enemyCountry].name} / ${DIFFICULTIES[game.difficulty].name}难度`; updateUI(); notify(`${COUNTRIES[game.country].name}部队已部署。发展经济，建造科技中心解锁特色兵种。`);
+  resetTouch(); closeCommand(); game = new Game(options); colors.player = FACTIONS[game.faction].color; unitSprites.clear(); selected = []; placement = null; attackMode = abilityMode = false; drag = pan = null; keys.clear(); paused = false; resultShown = false; fogSignature = ''; fogTime = radarTime = -Infinity; camera = { x: 0, y: 620 }; if (touchLayout) focusBase(); else boundCamera(); $('result').classList.add('hidden'); $('pause-label').classList.add('hidden'); $('pause').innerHTML = 'Ⅱ <span>暂停</span>'; setTab('build'); $('catalog').scrollTop = 0; document.querySelector('.sidebar').scrollTop = 0; document.querySelector('.objective p').textContent = `对手：${FACTIONS[COUNTRIES[game.enemyCountry].faction].name} · ${COUNTRIES[game.enemyCountry].name} / ${DIFFICULTIES[game.difficulty].name}难度`; updateUI(); notify(`${COUNTRIES[game.country].name}部队已部署。发展经济，建造科技中心解锁特色兵种。`);
 }
 function renderLobby() {
   const faction = COUNTRIES[chosenCountry].faction;
@@ -396,18 +516,18 @@ function renderLobby() {
   for (const b of $('faction-cards').querySelectorAll('button')) b.onclick = () => { chosenCountry = FACTIONS[b.dataset.faction].countries[0]; renderLobby(); };
   for (const b of $('country-cards').querySelectorAll('button')) b.onclick = () => { chosenCountry = b.dataset.country; renderLobby(); };
 }
-function openLobby() { lobbyOpen = true; chosenCountry = game.country; $('enemy-country').value = game.enemyCountry; $('difficulty').value = game.difficulty; keys.clear(); document.querySelector('main').inert = true; document.querySelector('header').inert = true; $('lobby').classList.remove('hidden'); $('resume-game').classList.toggle('hidden', !hasDeployed); renderLobby(); updateUI(); $('deploy').focus(); }
+function openLobby() { resetTouch(); closeCommand(); lobbyOpen = true; chosenCountry = game.country; $('enemy-country').value = game.enemyCountry; $('difficulty').value = game.difficulty; keys.clear(); document.querySelector('main').inert = true; document.querySelector('header').inert = true; $('lobby').classList.remove('hidden'); $('resume-game').classList.toggle('hidden', !hasDeployed); renderLobby(); updateUI(); $('deploy').focus(); }
 function closeLobby() { lobbyOpen = false; $('lobby').classList.add('hidden'); document.querySelector('main').inert = false; document.querySelector('header').inert = false; updateUI(); }
 $('enemy-country').innerHTML = Object.entries(FACTIONS).map(([id, f]) => `<optgroup label="${f.name}">${f.countries.map(c => `<option value="${c}">${COUNTRIES[c].name}</option>`).join('')}</optgroup>`).join('');
 $('deploy').onclick = () => { hasDeployed = true; closeLobby(); restart({ country: chosenCountry, enemyCountry: $('enemy-country').value, difficulty: $('difficulty').value }); };
 $('resume-game').onclick = closeLobby;
 $('restart').onclick = () => restart(); $('new-game').onclick = openLobby;
-$('ability').onclick = () => { if (paused) { notify('请先恢复行动'); return; } const a = FACTIONS[game.faction].ability; if (a.instant) { const r = game.useAbility(); if (!r.ok) notify(r.message); } else { abilityMode = !abilityMode; placement = null; attackMode = false; renderCatalog(); notify(a.desc); } updateUI(); };
+$('ability').onclick = () => { if (paused) { notify('请先恢复行动'); return; } const a = FACTIONS[game.faction].ability; if (a.instant) { const r = game.useAbility(); if (!r.ok) notify(r.message); } else { abilityMode = !abilityMode; placement = null; attackMode = false; renderCatalog(); if (abilityMode) closeCommand(); notify(a.desc); } updateUI(); };
 function frame(now) {
   const dt = Math.min((now - lastTime) / 1000, .1); lastTime = now;
   if (!paused && !game.result && !lobbyOpen) game.update(dt);
   const speed = 520 * dt;
-  if (!pan && !lobbyOpen) {
+  if (!pan && !touchPointers.size && !lobbyOpen) {
     if (keys.has('arrowleft') || keys.has('j') || (mouseInside && pointer.x < 12)) camera.x -= speed;
     if (keys.has('arrowright') || keys.has('d') || keys.has('l') || (mouseInside && pointer.x > view.width - 12)) camera.x += speed;
     if (keys.has('arrowup') || keys.has('w') || keys.has('i') || (mouseInside && pointer.y < 12)) camera.y -= speed;
@@ -416,9 +536,9 @@ function frame(now) {
   boundCamera(); draw();
   if (now - uiTime > 180) { updateUI(); uiTime = now; for (const message of game.events.splice(0)) notify(message); }
   if (game.result && !resultShown) {
-    resultShown = true; $('result').classList.remove('hidden'); $('result-title').textContent = game.result === 'victory' ? '行动胜利' : '基地失守'; $('result-text').textContent = game.result === 'victory' ? '敌方指挥中心已摧毁，灰岩谷现已控制。' : '我方指挥中心被摧毁。增加防御，保护你的生产线。';
+    resetTouch(); closeCommand(); resultShown = true; $('result').classList.remove('hidden'); $('result-title').textContent = game.result === 'victory' ? '行动胜利' : '基地失守'; $('result-text').textContent = game.result === 'victory' ? '敌方指挥中心已摧毁，灰岩谷现已控制。' : '我方指挥中心被摧毁。增加防御，保护你的生产线。';
   }
   requestAnimationFrame(frame);
 }
-generateTerrain(); resize(); new ResizeObserver(resize).observe($('field')); renderCatalog(); updateUI(); requestAnimationFrame(frame);
+setTouchLayout(touchQuery.matches); generateTerrain(); resize(); new ResizeObserver(resize).observe($('field')); renderCatalog(); updateUI(); requestAnimationFrame(frame);
 openLobby();

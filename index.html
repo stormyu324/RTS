@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>铁幕前线 · IRON FRONT</title><link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -19,10 +19,17 @@
       <div class="objective"><span class="objective-icon">⌖</span><div><small>当前任务</small><strong>摧毁敌方指挥中心</strong><p>建立生产线，集结部队，推进北部战区。</p></div></div>
       <div id="notice" role="status"></div>
       <div class="battle-footer"><span><i></i> 通讯链路正常</span><span>左键选择 · 拖动框选 · 右键指令 · 中键拖动视野</span></div>
+      <div class="touch-hint">点选部队 · 点地面移动 · 长按攻击<br>单指拖动框选 · 双指拖动视野</div>
+      <nav class="touch-controls" aria-label="触屏作战指令">
+        <div class="touch-selection"><span id="mobile-selection">点选部队开始行动</span><button id="mobile-cancel">清除</button></div>
+        <div class="touch-orders"><button id="mobile-select">全选部队</button><button id="mobile-attack">进攻</button><button id="mobile-stop">停止</button><button id="mobile-home">回基地</button><button id="mobile-command" aria-controls="command-panel" aria-expanded="false">建造 / 生产</button></div>
+      </nav>
       <div class="modal hidden" id="result"><div><span class="eyebrow">OPERATION REPORT</span><h1 id="result-title"></h1><p id="result-text"></p><button id="restart">重新部署 ↗</button></div></div>
       <div class="pause-label hidden" id="pause-label">行动暂停<small>按空格或点击暂停按钮继续</small></div>
     </section>
-    <aside class="sidebar">
+    <button id="command-shade" class="command-shade" aria-label="关闭指挥菜单" tabindex="-1"></button>
+    <aside class="sidebar" id="command-panel" aria-label="作战指挥菜单">
+      <div class="touch-panel-heading"><strong>作战指挥</strong><button id="close-command">返回战场 ✕</button></div>
       <div class="command-heading"><div><span class="eyebrow">COMMAND CENTER</span><h2>作战指挥</h2></div><span class="status-tag">在线</span></div>
       <div class="nation-banner"><strong id="nation-name">联邦同盟 / 美国</strong><small id="nation-trait"></small><button id="ability"><span id="ability-name"></span><small id="ability-status"></small></button></div>
       <section class="radar-section"><div class="section-title"><span>战术雷达</span><small>点击定位</small></div><canvas id="radar" width="288" height="152" aria-label="战术小地图"></canvas><div class="radar-key"><span><i class="blue"></i>我方</span><span><i class="red"></i>敌方</span><span><i class="gold"></i>矿区</span></div></section>
